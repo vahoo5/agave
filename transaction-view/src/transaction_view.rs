@@ -35,6 +35,12 @@ impl<D: TransactionData> TransactionView<false, D> {
         Ok(Self { data, frame })
     }
 
+    /// Creates a new `TransactionView` without running sanitization checks.
+    pub fn try_new_unsanitized_with_offset(data: D, offset: usize) -> Result<Self> {
+        let frame = TransactionFrame::try_new_with_offset(data.data(), offset)?;
+        Ok(Self { data, frame })
+    }
+
     /// Sanitizes the transaction view, returning a sanitized view on success.
     pub fn sanitize(self) -> Result<SanitizedTransactionView<D>> {
         sanitize(&self)?;
@@ -256,8 +262,12 @@ mod tests {
     };
 
     fn verify_transaction_view_frame(tx: &VersionedTransaction) {
-        let bytes = bincode::serialize(tx).unwrap();
-        let view = TransactionView::try_new_unsanitized(bytes.as_ref()).unwrap();
+        let mut bytes = vec![0u8; 10];
+        bytes.extend_from_slice(&bincode::serialize(tx).unwrap());
+        // add some to the end to simulate a larger buffer
+        bytes.extend_from_slice(&vec![0u8; 10]);
+        let bytes: &[u8] = &bytes;
+        let view = TransactionView::try_new_unsanitized_with_offset(bytes.as_ref(), 10).unwrap();
 
         assert_eq!(view.num_signatures(), tx.signatures.len() as u8);
 

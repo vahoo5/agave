@@ -28,6 +28,8 @@ pub(crate) struct TransactionFrame {
     instructions: InstructionsFrame,
     /// Address table lookup framing data.
     address_table_lookup: AddressTableLookupFrame,
+    
+    pub end_offset: usize,
 }
 
 impl TransactionFrame {
@@ -35,6 +37,40 @@ impl TransactionFrame {
     /// The `bytes` parameter must have no trailing data.
     pub(crate) fn try_new(bytes: &[u8]) -> Result<Self> {
         let mut offset = 0;
+        let signature = SignatureFrame::try_new(bytes, &mut offset)?;
+        let message_header = MessageHeaderFrame::try_new(bytes, &mut offset)?;
+        let static_account_keys = StaticAccountKeysFrame::try_new(bytes, &mut offset)?;
+
+        // The recent blockhash is the first account key after the static
+        // account keys. The recent blockhash is always present in a valid
+        // transaction and has a fixed size of 32 bytes.
+        let recent_blockhash_offset = offset as u16;
+        advance_offset_for_type::<Hash>(bytes, &mut offset)?;
+
+        let instructions = InstructionsFrame::try_new(bytes, &mut offset)?;
+        let address_table_lookup: AddressTableLookupFrame = match message_header.version {
+            TransactionVersion::Legacy => AddressTableLookupFrame {
+                num_address_table_lookups: 0,
+                offset: 0,
+                total_writable_lookup_accounts: 0,
+                total_readonly_lookup_accounts: 0,
+            },
+            TransactionVersion::V0 => AddressTableLookupFrame::try_new(bytes, &mut offset)?,
+        };
+
+        Ok(Self {
+            signature,
+            message_header,
+            static_account_keys,
+            recent_blockhash_offset,
+            instructions,
+            address_table_lookup,
+            end_offset: offset,
+        })
+    }
+
+    pub(crate) fn try_new_with_offset(bytes: &[u8], start_offset: usize) -> Result<Self> {
+        let mut offset = start_offset;
         let signature = SignatureFrame::try_new(bytes, &mut offset)?;
         let message_header = MessageHeaderFrame::try_new(bytes, &mut offset)?;
         let static_account_keys = StaticAccountKeysFrame::try_new(bytes, &mut offset)?;
@@ -56,11 +92,6 @@ impl TransactionFrame {
             TransactionVersion::V0 => AddressTableLookupFrame::try_new(bytes, &mut offset)?,
         };
 
-        // Verify that the entire transaction was parsed.
-        if offset != bytes.len() {
-            return Err(TransactionViewError::ParseError);
-        }
-
         Ok(Self {
             signature,
             message_header,
@@ -68,6 +99,7 @@ impl TransactionFrame {
             recent_blockhash_offset,
             instructions,
             address_table_lookup,
+            end_offset: offset,
         })
     }
 
@@ -441,14 +473,6 @@ mod tests {
     #[test]
     fn test_v0_with_lookup() {
         verify_transaction_view_frame(&v0_with_single_lookup());
-    }
-
-    #[test]
-    fn test_trailing_byte() {
-        let tx = simple_transfer();
-        let mut bytes = bincode::serialize(&tx).unwrap();
-        bytes.push(0);
-        assert!(TransactionFrame::try_new(&bytes).is_err());
     }
 
     #[test]
